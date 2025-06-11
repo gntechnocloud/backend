@@ -1,0 +1,42 @@
+// src/utils/notificationHelpers.js
+
+import nodemailer from 'nodemailer';
+import axios from 'axios';
+import { info, error as logError } from './logger.js';
+
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST,
+  port: process.env.SMTP_PORT,
+  secure: process.env.SMTP_SECURE === 'true',
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS
+  }
+});
+
+export const sendEmail = async ({ to, subject, text, html }) => {
+  try {
+    await transporter.sendMail({
+      from: process.env.SMTP_FROM,
+      to,
+      subject,
+      text,
+      html
+    });
+    info(`Email sent to ${to}: ${subject}`);
+  } catch (err) {
+    logError('Email sending error:', err);
+  }
+};
+
+export const sendWebhook = async ({ event, payload }) => {
+  try {
+    await axios.post(process.env.WEBHOOK_URL, {
+      event,
+      data: payload
+    });
+    info(`Webhook event ${event} sent.`);
+  } catch (err) {
+    logError('Webhook sending error:', err);
+  }
+};

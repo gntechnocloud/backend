@@ -1,0 +1,28 @@
+# Server Configuration
+NODE_ENV=development
+PORT=3000
+HOST=localhost
+
+# Database Configuration
+MONGODB_URI=mongodb://localhost:27017/fortunity_nxt
+MONGODB_TEST_URI=mongodb://localhost:27017/fortunity_nxt_test
+
+# Blockchain Configuration
+WEB3_PROVIDER_URL=https://mainnet.infura.io/v3/4f861e15a8644bfea388b483a6cc7bfb
+CONTRACT_ADDRESS=0x1234567890123456789012345678901234567890
+PRIVATE_KEY=ad2dd65a23e891dd4b2fea2683b048ca
+CHAIN_ID=1
+
+# JWT Configuration
+JWT_SECRET=your_super_secret_jwt_key_here
+JWT_EXPIRES_IN=7d
+
+# Rate Limiting
+RATE_LIMIT_WINDOW_MS=900000
+RATE_LIMIT_MAX_REQUESTS=100
+
+# Admin Configuration
+ADMIN_ADDRESSES=0x1234567890123456789012345678901234567890
+
+# Pool Distribution
+POOL_DISTRIBUTION_DAYS=5,15,25

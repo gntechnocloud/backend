@@ -1,0 +1,255 @@
+// src/listeners/diamondEventListener.js
+
+import { ethers } from 'ethers';
+import dotenv from 'dotenv';
+import User from '../models/User.js';
+import Slot from '../models/Slot.js';
+import Income from '../models/Income.js';
+import Transaction from '../models/Transaction.js';
+import { info, warn, error as logError } from '../utils/logger.js';
+import diamondAbi from '../abi/diamondAbi.json'; // ABI file from Hardhat compile
+import { sendEmail, sendWebhook } from '../utils/notifier.js';
+
+await sendEmail({
+  to: user.email,
+  subject: `You've received Matrix Income!`,
+  text: `Hi ${user.username}, you received ${amount} CORE in slot ${slotNumber}.`,
+  html: `<strong>Hi ${user.username}</strong>,<br/>You received <b>${amount}</b> CORE in slot ${slotNumber}.`
+});
+
+await sendWebhook({
+  event: 'MatrixIncomePaid',
+  user: user.walletAddress,
+  slotNumber,
+  amount,
+  timestamp: new Date(),
+});
+
+
+dotenv.config();
+
+const provider = new ethers.JsonRpcProvider(process.env.RPC_URL);
+const diamondContract = new ethers.Contract(process.env.DIAMOND_ADDRESS, diamondAbi, provider);
+
+export async function initDiamondEventListeners() {
+  info('Initializing Diamond Contract Event Listeners...');
+
+  // 1. UserRegistered
+  diamondContract.on('UserRegistered', async (walletAddress, username, referralCode, event) => {
+    try {
+      const lowerAddress = walletAddress.toLowerCase();
+      let user = await User.findOne({ walletAddress: lowerAddress });
+      if (!user) {
+        user = new User({
+          walletAddress: lowerAddress,
+          username,
+          email: `${username}@example.com`,
+          referralCode: User.prototype.generateReferralCode()
+        });
+        await user.save();
+        info(`User ${walletAddress} registered.`);
+      } else {
+        info(`User ${walletAddress} already exists.`);
+      }
+    } catch (err) {
+      logError('Error in UserRegistered:', err);
+    }
+  });
+
+  // 2. SlotPurchased
+  diamondContract.on('SlotPurchased', async (userAddress, slotNumber, event) => {
+    try {
+      const user = await User.findOne({ walletAddress: userAddress.toLowerCase() });
+      const slot = await Slot.findOne({ slotNumber: parseInt(slotNumber) });
+
+      if (!user || !slot) {
+        warn(`SlotPurchased: Missing user or slot - ${userAddress}, slot ${slotNumber}`);
+        return;
+      }
+
+      user.activateSlot(slotNumber);
+      slot.purchaseCount += 1;
+      slot.lastPurchaseDate = new Date();
+      await Promise.all([user.save(), slot.save()]);
+
+      await Transaction.create({
+        transactionHash: event.transactionHash,
+        fromAddress: userAddress,
+        toAddress: process.env.DIAMOND_ADDRESS,
+        amount: slot.price,
+        transactionType: 'purchase',
+        relatedUser: user._id,
+        description: `Slot ${slotNumber} purchased`,
+        blockNumber: event.blockNumber,
+        gasUsed: event.gasUsed?.toString()
+      });
+
+      info(`Slot ${slotNumber} purchased by ${userAddress}`);
+    } catch (err) {
+      logError('Error in SlotPurchased:', err);
+    }
+  });
+
+  // 3. MatrixIncomePaid
+  diamondContract.on('MatrixIncomePaid', async (sender, receiver, slotNumber, amount, event) => {
+    try {
+      const user = await User.findOne({ walletAddress: receiver.toLowerCase() });
+      if (!user) return warn(`MatrixIncomePaid: Receiver not found: ${receiver}`);
+
+      await user.addEarnings('matrixIncome', parseFloat(amount));
+
+      const senderUser = await User.findOne({ walletAddress: sender.toLowerCase() });
+
+      await Income.create({
+        user: user._id,
+        incomeType: 'matrix',
+        amount,
+        description: `Matrix income from slot ${slotNumber}`,
+        transactionHash: event.transactionHash,
+        relatedUser: senderUser?._id,
+        slotNumber
+      });
+
+      await Transaction.create({
+        transactionHash: event.transactionHash,
+        fromAddress: process.env.DIAMOND_ADDRESS,
+        toAddress: receiver,
+        amount,
+        transactionType: 'income',
+        relatedUser: user._id,
+        description: `Matrix income from slot ${slotNumber}`,
+        blockNumber: event.blockNumber,
+        gasUsed: event.gasUsed?.toString()
+      });
+
+      info(`Matrix income paid to ${receiver} for slot ${slotNumber}`);
+    } catch (err) {
+      logError('Error in MatrixIncomePaid:', err);
+    }
+  });
+
+  // 4. LevelIncomePaid
+  diamondContract.on('LevelIncomePaid', async (sender, receiver, levelNumber, amount, event) => {
+    try {
+      const user = await User.findOne({ walletAddress: receiver.toLowerCase() });
+      if (!user) return warn(`LevelIncomePaid: Receiver not found: ${receiver}`);
+
+      await user.addEarnings('levelIncome', parseFloat(amount));
+
+      const senderUser = await User.findOne({ walletAddress: sender.toLowerCase() });
+
+      await Income.create({
+        user: user._id,
+        incomeType: 'level',
+        amount,
+        description: `Level income from level ${levelNumber}`,
+        transactionHash: event.transactionHash,
+        relatedUser: senderUser?._id,
+        levelNumber: parseInt(levelNumber)
+      });
+
+      await Transaction.create({
+        transactionHash: event.transactionHash,
+        fromAddress: process.env.DIAMOND_ADDRESS,
+        toAddress: receiver,
+        amount,
+        transactionType: 'income',
+        relatedUser: user._id,
+        description: `Level income from level ${levelNumber}`,
+        blockNumber: event.blockNumber,
+        gasUsed: event.gasUsed?.toString()
+      });
+
+      info(`Level income paid to ${receiver} for level ${levelNumber}`);
+    } catch (err) {
+      logError('Error in LevelIncomePaid:', err);
+    }
+  });
+
+  // 5. PoolIncomePaid
+  diamondContract.on('PoolIncomePaid', async (receiver, amount, event) => {
+    try {
+      const user = await User.findOne({ walletAddress: receiver.toLowerCase() });
+      if (!user) return warn(`PoolIncomePaid: Receiver not found: ${receiver}`);
+
+      await user.addEarnings('poolIncome', parseFloat(amount));
+
+      await Income.create({
+        user: user._id,
+        incomeType: 'pool',
+        amount,
+        description: `Pool income`,
+        transactionHash: event.transactionHash
+      });
+
+      await Transaction.create({
+        transactionHash: event.transactionHash,
+        fromAddress: process.env.DIAMOND_ADDRESS,
+        toAddress: receiver,
+        amount,
+        transactionType: 'income',
+        relatedUser: user._id,
+        description: 'Pool income',
+        blockNumber: event.blockNumber,
+        gasUsed: event.gasUsed?.toString()
+      });
+
+      info(`Pool income paid to ${receiver}`);
+    } catch (err) {
+      logError('Error in PoolIncomePaid:', err);
+    }
+  });
+
+  // 6. Rebirth
+  diamondContract.on('Rebirth', async (userAddress, slotNumber, event) => {
+    try {
+      const user = await User.findOne({ walletAddress: userAddress.toLowerCase() });
+      if (!user) return warn(`Rebirth: User not found: ${userAddress}`);
+
+      user.processRebirth(parseInt(slotNumber));
+      await user.save();
+
+      const slot = await Slot.findOne({ slotNumber: parseInt(slotNumber) });
+
+      await Transaction.create({
+        transactionHash: event.transactionHash,
+        fromAddress: userAddress,
+        toAddress: process.env.DIAMOND_ADDRESS,
+        amount: slot?.price || 0,
+        transactionType: 'rebirth',
+        relatedUser: user._id,
+        description: `Rebirth on slot ${slotNumber}`,
+        blockNumber: event.blockNumber,
+        gasUsed: event.gasUsed?.toString()
+      });
+
+      info(`Rebirth processed for ${userAddress} on slot ${slotNumber}`);
+    } catch (err) {
+      logError('Error in Rebirth:', err);
+    }
+  });
+
+  // 7. AdminFeePaid
+  diamondContract.on('AdminFeePaid', async (receiver, amount, event) => {
+    try {
+      const user = await User.findOne({ walletAddress: receiver.toLowerCase() });
+      if (!user) return warn(`AdminFeePaid: Receiver not found: ${receiver}`);
+
+      await Transaction.create({
+        transactionHash: event.transactionHash,
+        fromAddress: process.env.DIAMOND_ADDRESS,
+        toAddress: receiver,
+        amount: parseFloat(amount),
+        transactionType: 'adminFee',
+        relatedUser: user._id,
+        description: 'Admin fee payment',
+        blockNumber: event.blockNumber,
+        gasUsed: event.gasUsed?.toString()
+      });
+
+      info(`Admin fee paid to ${receiver}`);
+    } catch (err) {
+      logError('Error in AdminFeePaid:', err);
+    }
+  });
+}

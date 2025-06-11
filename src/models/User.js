@@ -1,8 +1,6 @@
 ﻿const mongoose = require('mongoose');
-const bcrypt = require('bcryptjs');
 
 const userSchema = new mongoose.Schema({
-  // Basic Information
   walletAddress: {
     type: String,
     required: true,
@@ -25,8 +23,7 @@ const userSchema = new mongoose.Schema({
     lowercase: true,
     trim: true
   },
-  
-  // Referral System
+
   referredBy: {
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User',
@@ -38,8 +35,7 @@ const userSchema = new mongoose.Schema({
     required: true,
     index: true
   },
-  
-  // Matrix Information
+
   matrixLevel: {
     type: Number,
     default: 1,
@@ -52,16 +48,14 @@ const userSchema = new mongoose.Schema({
     min: 1,
     max: 12
   },
-  
-  // Earnings Tracking
+
   totalEarnings: {
     matrixIncome: { type: Number, default: 0 },
     levelIncome: { type: Number, default: 0 },
     poolIncome: { type: Number, default: 0 },
     total: { type: Number, default: 0 }
   },
-  
-  // Slot Status
+
   activeSlots: [{
     slotNumber: { type: Number, required: true },
     isActive: { type: Boolean, default: true },
@@ -72,8 +66,7 @@ const userSchema = new mongoose.Schema({
       position: Number
     }
   }],
-  
-  // Team Information
+
   directReferrals: [{
     type: mongoose.Schema.Types.ObjectId,
     ref: 'User'
@@ -82,8 +75,7 @@ const userSchema = new mongoose.Schema({
     direct: { type: Number, default: 0 },
     total: { type: Number, default: 0 }
   },
-  
-  // Authentication
+
   nonce: {
     type: String,
     default: null
@@ -92,8 +84,7 @@ const userSchema = new mongoose.Schema({
     type: Date,
     default: null
   },
-  
-  // Status
+
   isActive: {
     type: Boolean,
     default: true
@@ -102,8 +93,7 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: false
   },
-  
-  // Metadata
+
   registrationDate: {
     type: Date,
     default: Date.now
@@ -118,7 +108,7 @@ const userSchema = new mongoose.Schema({
   toObject: { virtuals: true }
 });
 
-// Indexes for performance
+// Indexes
 userSchema.index({ walletAddress: 1 });
 userSchema.index({ referralCode: 1 });
 userSchema.index({ referredBy: 1 });
@@ -126,20 +116,19 @@ userSchema.index({ matrixLevel: 1, currentSlot: 1 });
 userSchema.index({ 'activeSlots.slotNumber': 1 });
 userSchema.index({ registrationDate: -1 });
 
-// Virtual for referral URL
-userSchema.virtual('referralUrl').get(function() {
+// Virtuals
+userSchema.virtual('referralUrl').get(function () {
   return `${process.env.FRONTEND_URL}/register?ref=${this.referralCode}`;
 });
 
-// Virtual for total team earnings
-userSchema.virtual('totalTeamEarnings').get(function() {
-  return this.totalEarnings.matrixIncome + 
-         this.totalEarnings.levelIncome + 
-         this.totalEarnings.poolIncome;
+userSchema.virtual('totalTeamEarnings').get(function () {
+  return this.totalEarnings.matrixIncome +
+    this.totalEarnings.levelIncome +
+    this.totalEarnings.poolIncome;
 });
 
-// Methods
-userSchema.methods.generateReferralCode = function() {
+// Generate referral code - instance method
+userSchema.methods.generateReferralCode = function () {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let result = '';
   for (let i = 0; i < 8; i++) {
@@ -148,60 +137,127 @@ userSchema.methods.generateReferralCode = function() {
   return result;
 };
 
-userSchema.methods.addEarnings = function(type, amount) {
-  this.totalEarnings[type] += amount;
-  this.totalEarnings.total += amount;
-  this.lastActivity = new Date();
-  return this.save();
-};
+// --- ATOMIC OPERATIONS ---
 
-userSchema.methods.activateSlot = function(slotNumber) {
-  const existingSlot = this.activeSlots.find(slot => slot.slotNumber === slotNumber);
-  if (!existingSlot) {
-    this.activeSlots.push({
-      slotNumber,
-      isActive: true,
-      purchaseDate: new Date(),
-      rebirthCount: 0
-    });
+/**
+ * Atomically increment earnings and total
+ * @param {string} walletAddress - User wallet address (lowercase)
+ * @param {string} type - 'matrixIncome', 'levelIncome', or 'poolIncome'
+ * @param {number} amount - Amount to increment
+ * @returns {Promise}
+ */
+userSchema.statics.incEarnings = function (walletAddress, type, amount) {
+  if (!['matrixIncome', 'levelIncome', 'poolIncome'].includes(type)) {
+    return Promise.reject(new Error(`Invalid earnings type: ${type}`));
   }
-  this.currentSlot = Math.max(this.currentSlot, slotNumber);
-  this.lastActivity = new Date();
-  return this.save();
+
+  // Use $inc for earnings and total, $set for lastActivity date
+  const incFields = {
+    [`totalEarnings.${type}`]: amount,
+    'totalEarnings.total': amount
+  };
+
+  return this.updateOne(
+    { walletAddress: walletAddress.toLowerCase() },
+    {
+      $inc: incFields,
+      $set: { lastActivity: new Date() }
+    }
+  ).exec();
 };
 
-userSchema.methods.processRebirth = function(slotNumber) {
-  const slot = this.activeSlots.find(s => s.slotNumber === slotNumber);
-  if (slot) {
-    slot.rebirthCount += 1;
-    slot.purchaseDate = new Date();
-  }
-  this.lastActivity = new Date();
-  return this.save();
+/**
+ * Atomically activate a slot for user (add slot if not exists)
+ * @param {string} walletAddress 
+ * @param {number} slotNumber 
+ * @returns {Promise}
+ */
+userSchema.statics.activateSlotAtomic = function (walletAddress, slotNumber) {
+  return this.updateOne(
+    { walletAddress: walletAddress.toLowerCase(), 'activeSlots.slotNumber': { $ne: slotNumber } },
+    {
+      $push: {
+        activeSlots: {
+          slotNumber,
+          isActive: true,
+          purchaseDate: new Date(),
+          rebirthCount: 0
+        }
+      },
+      $set: {
+        currentSlot: slotNumber,
+        lastActivity: new Date()
+      }
+    }
+  ).exec()
+  .then(res => {
+    // If the slot was already active, update currentSlot if slotNumber > currentSlot
+    if (res.modifiedCount === 0) {
+      return this.updateOne(
+        { walletAddress: walletAddress.toLowerCase(), currentSlot: { $lt: slotNumber } },
+        { $set: { currentSlot: slotNumber, lastActivity: new Date() } }
+      ).exec();
+    }
+    return res;
+  });
 };
 
-// Pre-save middleware
-userSchema.pre('save', function(next) {
+/**
+ * Atomically increment rebirth count and update purchaseDate for a slot
+ * @param {string} walletAddress 
+ * @param {number} slotNumber 
+ * @returns {Promise}
+ */
+userSchema.statics.incrementRebirth = function (walletAddress, slotNumber) {
+  return this.updateOne(
+    {
+      walletAddress: walletAddress.toLowerCase(),
+      'activeSlots.slotNumber': slotNumber
+    },
+    {
+      $inc: { 'activeSlots.$.rebirthCount': 1 },
+      $set: { 'activeSlots.$.purchaseDate': new Date(), lastActivity: new Date() }
+    }
+  ).exec();
+};
+
+// --- Existing instance methods updated to async and atomic internally ---
+
+userSchema.methods.addEarnings = async function (type, amount) {
+  await this.constructor.incEarnings(this.walletAddress, type, amount);
+};
+
+userSchema.methods.activateSlot = async function (slotNumber) {
+  await this.constructor.activateSlotAtomic(this.walletAddress, slotNumber);
+};
+
+userSchema.methods.processRebirth = async function (slotNumber) {
+  await this.constructor.incrementRebirth(this.walletAddress, slotNumber);
+};
+
+// Pre-save to generate referralCode if not present
+userSchema.pre('save', function (next) {
   if (this.isNew && !this.referralCode) {
     this.referralCode = this.generateReferralCode();
   }
   next();
 });
 
-// Static methods
-userSchema.statics.findByWallet = function(walletAddress) {
-  return this.findOne({ walletAddress: walletAddress.toLowerCase() });
+// Static finders
+userSchema.statics.findByWallet = function (walletAddress) {
+  return this.findOne({ walletAddress: walletAddress.toLowerCase() }).exec();
 };
 
-userSchema.statics.findByReferralCode = function(referralCode) {
-  return this.findOne({ referralCode: referralCode.toUpperCase() });
+userSchema.statics.findByReferralCode = function (referralCode) {
+  return this.findOne({ referralCode: referralCode.toUpperCase() }).exec();
 };
 
-userSchema.statics.getLeaderboard = function(limit = 10) {
+userSchema.statics.getLeaderboard = function (limit = 10) {
   return this.find({ isActive: true })
     .sort({ 'totalEarnings.total': -1 })
     .limit(limit)
-    .select('username totalEarnings teamSize registrationDate');
+    .select('username totalEarnings teamSize registrationDate')
+    .exec();
 };
 
 module.exports = mongoose.model('User', userSchema);

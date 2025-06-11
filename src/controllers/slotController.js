@@ -1,4 +1,4 @@
-﻿const reownService = require('../services/reownService');
+﻿//const reownService = require('../services/reownService');
 const Slot = require('../models/Slot');
 const User = require('../models/User');
 const logger = require('../utils/logger');
@@ -44,7 +44,7 @@ async function checkEligibility(req, res) {
     }
 }
 
-async function purchaseSlot(req, res) {
+/* async function purchaseSlot(req, res) {
     const userAddress = req.user.walletAddress;
     const slotNumber = parseInt(req.body.slotNumber);
 
@@ -63,8 +63,28 @@ async function purchaseSlot(req, res) {
         logger.error('Failed to purchase slot', error);
         res.status(500).json({ message: 'Failed to purchase slot', error: error.message });
     }
-}
+} */
 
+    async function purchaseSlot(req, res) {
+        const userAddress = req.user.walletAddress;
+        const slotNumber = parseInt(req.body.slotNumber);
+        const txHash = req.body.txHash; // sent from frontend
+    
+        try {
+            if (!txHash) {
+                return res.status(400).json({ message: 'Transaction hash is required' });
+            }
+    
+            // Optionally store or log the purchase in DB
+            logger.info(`Slot ${slotNumber} purchased by ${userAddress}, tx: ${txHash}`);
+    
+            res.json({ message: 'Slot purchase acknowledged', transactionHash: txHash });
+        } catch (error) {
+            logger.error('Failed to acknowledge slot purchase', error);
+            res.status(500).json({ message: 'Failed to process slot purchase', error: error.message });
+        }
+    }
+    
 module.exports = {
     getAllSlots,
     getSlotByNumber,

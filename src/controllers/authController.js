@@ -1,7 +1,9 @@
-﻿const Web3 = require('web3');
+﻿//const Web3 = require('web3');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
+//const web3 = new Web3(process.env.BLOCKCHAIN_NODE_URL);
+const Web3 = require('web3').default;
 const web3 = new Web3(process.env.BLOCKCHAIN_NODE_URL);
 
 async function login(req, res) {

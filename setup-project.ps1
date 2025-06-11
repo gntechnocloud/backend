@@ -1,4 +1,4 @@
-# Fortunity NXT Backend Setup Script
+le# Fortunity NXT Backend Setup Script
 # Run this script in PowerShell as Administrator or with execution policy set
 
 param(
